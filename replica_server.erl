@@ -1,10 +1,8 @@
 -module(replica_server).
 -behaviour(gen_server).
-
 -export([start/2, stop/1, putt/5, remm/4, gett/3, sizee/1, test/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
-
--record(state, {dict=gb_trees:empty(), replicas=[], pending_puts_all=[], pending_puts_quorum=[], pending_rems_all=[], pending_rems_quorum=[], pending_gets_all=[], pending_gets_quorum=[]}).
+-record(state, {dict, replicas, pending_puts_all, pending_puts_quorum, pending_rems_all, pending_rems_quorum, pending_gets_all, pending_gets_quorum}).
 
 %%% Public API %%%
 test() ->
@@ -32,22 +30,28 @@ sizee(Name) ->
 
 %%% GenServer callbacks %%%
 init(Replicas) ->
-    {ok, #state{dict=gb_trees:empty(), replicas=Replicas, pending_puts_all=[], pending_puts_quorum=[], pending_rems_all=[], pending_rems_quorum=[], pending_gets_all=[], pending_gets_quorum=[]}}.
+    {ok, #state{dict = dict:store("1", {10, os:timestamp(), true}, dict:new()), replicas = Replicas, 
+    pending_puts_all = [], 
+    pending_puts_quorum = [], 
+    pending_rems_all = [], 
+    pending_rems_quorum = [], 
+    pending_gets_all = [], 
+    pending_gets_quorum = []}}.
 
 handle_call({putt, Key, Value, TimeStamp, Consistency}, _From, State) ->
     NewState = do_putt(Key, Value, TimeStamp, Consistency, State),
     {reply, ok, NewState};
-    
+
 handle_call({remm, Key, TimeStamp, Consistency}, _From, State) ->
     NewState = do_remm(Key, TimeStamp, Consistency, State),
     {reply, ok, NewState};
-    
+
 handle_call({gett, Key, Consistency}, _From, State) ->
     {reply, do_gett(Key, Consistency, State), State};
-    
+
 handle_call(sizee, _From, State) ->
     {reply, dict:size(State#state.dict), State};
-    
+
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -164,7 +168,7 @@ code_change(_OldVsn, State, _Extra) ->
 do_putt(Key, Value, TimeStamp, Consistency, State) ->
     case Consistency of
         one ->
-            {ok, NewDict} = dict:store(Key, {Value, TimeStamp, true}, State#state.dict),
+            NewDict = dict:store(Key, {Value, TimeStamp, true}, State#state.dict),
             State#state{dict=NewDict};
         quorum ->
             % Envía una solicitud a las réplicas para verificar si la tupla ya existe
@@ -177,14 +181,25 @@ do_putt(Key, Value, TimeStamp, Consistency, State) ->
 do_remm(Key, TimeStamp, Consistency, State) ->
     case Consistency of
         one ->
-            {ok, NewDict} = dict:erase(Key, State#state.dict),
-            State#state{dict=NewDict};
+                case dict:find(Key, State#state.dict) of
+                    {ok, {_, ExistingTimeStamp, true}} when ExistingTimeStamp =< TimeStamp ->
+                        % Si existe y está activa, actualiza el timestamp al actual y desactiva la tupla
+                        NewDict = dict:update(Key, fun({_Value, _ExistingTimeStamp, _IsActive}) -> {null, TimeStamp, false} end, State#state.dict),
+                        {noreply, State#state{dict=NewDict}};
+                    {error, _} ->
+                        % Si no existe, crea una nueva tupla con valor null, el timestamp actual y desactivada
+                        NewDict = dict:store(Key, {null, TimeStamp, false}, State#state.dict),
+                        {noreply, State#state{dict=NewDict}};
+                    _ ->
+                        % Si existe pero está desactivada, no se realiza ninguna acción
+                        {noreply, State}
+                end.
         quorum ->
             % Envía una solicitud a las réplicas para verificar si la tupla ya existe
-            {noreply, State#state{pending_rems_quorum=[{self(), Key, TimeStamp}|State#state.pending_rems_quorum]}};
+            {noreply, State#state{pending_rems_quorum=[{self(), Key, TimeStamp} | State#state.pending_rems_quorum]}};
         all ->
             % Envía una solicitud a todas las réplicas para verificar si la tupla ya existe
-            {noreply, State#state{pending_rems_all=[{self(), Key, TimeStamp}|State#state.pending_rems_all]}}
+            {noreply, State#state{pending_rems_all=[{self(), Key, TimeStamp} | State#state.pending_rems_all]}}
     end.
 
 do_gett(Key, Consistency, State) ->
@@ -193,8 +208,8 @@ do_gett(Key, Consistency, State) ->
             dict:find(Key, State#state.dict);
         quorum ->
             % Envía una solicitud a las réplicas para obtener el valor de la tupla
-            {noreply, State#state{pending_gets_quorum=[{self(), Key}|State#state.pending_gets_quorum]}};
+            {noreply, State#state{pending_gets_quorum=[{self(), Key} | State#state.pending_gets_quorum]}};
         all ->
             % Envía una solicitud a todas las réplicas para obtener el valor de la tupla
-            {noreply, State#state{pending_gets_all=[{self(), Key}|State#state.pending_gets_all]}}
+            {noreply, State#state{pending_gets_all=[{self(), Key} | State#state.pending_gets_all]}}
     end.
