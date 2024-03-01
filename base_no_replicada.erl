@@ -1,27 +1,47 @@
 -module(base_no_replicada).
-
--export([start/1, stop/0, all/0, remall/0, putt/3, remm/2, gett/1, sizee/0]).
+-export([start/1, stop/0, putt/3, remm/2, gett/1, sizee/0, all/0, remall/0]).
 
 start(A) ->
 	register(A, spawn(fun() -> init(A) end)).
 
-
 init(A) ->
 	Dict = dict:new(),
-	TS1 = erlang:timestamp(),
-	TS2 = erlang:timestamp(),
-	TS3 = erlang:timestamp(),
-	L = [{key1,{"valA",TS1}},{key2,{"valB",TS2}},{key3,{"valC",TS3}}],
-	Dict1 = dict:from_list(L),
-	register(servers, spawn(fun() -> server(A) end)),
-	loop(Dict).
+	Pid = whereis(servers),
+	if
+		Pid =:= undefined ->	
+			register(servers, spawn(fun() -> server(A) end)),
+			loop(Dict);		
+		true ->
+			loop(Dict)
+	end.
 	
-server(Server) ->
+server(Process) ->
 	receive
 		{consultaServidor, Pid} -> 
-			Pid ! {replyServer, Server},
-			server(Server)
+			Pid ! {replyServer, Process},
+			server(Process)
 	end.
+	
+stop() -> call(stop).
+all() -> call(all).
+remall() -> call(remall).
+putt(Key, Value, TimeStamp) -> call({putt, Key, Value, TimeStamp}).
+remm(Key, TimeStamp) -> call({remm, Key, TimeStamp}).
+gett(Key) -> call({gett, Key}).
+sizee() -> call({sizee}).
+
+call(M) ->
+	servers ! {consultaServidor, self()},
+	receive 
+		{replyServer, Process} -> P = Process
+	end,
+	P ! {request, self(), M},
+	receive 
+		{reply, Reply} -> Reply
+	end.
+	
+reply(Pid,Reply) ->
+	Pid ! {reply, Reply}.
 
 loop(Dict) ->
 	receive
@@ -47,7 +67,7 @@ loop(Dict) ->
 					{ok, {Value, TimeStamp, Activo}} = Val,
 					case Activo of
 						true ->
-							reply(Pid, {ok, {Value,TimeStamp}}),
+							reply(Pid, Val),
 							loop(Dict);
 						false ->
 							reply(Pid, {ko, TimeStamp}),
@@ -69,7 +89,7 @@ loop(Dict) ->
 						true ->
 							if
 								TimeStamp > TimeStamp1 ->
-									Fun = fun({V,TS, _Activo}) -> {V,TimeStamp,false} end, 
+									Fun = fun({V,_TS, _Activo}) -> {V,TimeStamp,false} end, 
 									Dict1 = dict:update(Key, Fun, Dict),
 									reply(Pid,ok),
 									loop(Dict1);
@@ -111,27 +131,6 @@ loop(Dict) ->
 					end
 			end
 	end.
-	
-stop() -> call(stop).
-all() -> call(all).
-remall() -> call(remall).
-putt(Key, Value, TimeStamp) -> call({putt, Key, Value, TimeStamp}).
-remm(Key, TimeStamp) -> call({remm, Key, TimeStamp}).
-gett(Key) -> call({gett, Key}).
-sizee() -> call({sizee}).
-
-call(M) ->
-	servers ! {consultaServidor, self()},
-	receive 
-		{replyServer, Server} -> S = Server
-	end,
-	S ! {request, self(), M},
-	receive 
-		{reply, Reply} -> Reply
-	end.
-	
-reply(Pid,Reply) ->
-	Pid ! {reply, Reply}.
 
 remov([H|T], Dict) ->
 	Dict2 = dict:erase(H,Dict),
